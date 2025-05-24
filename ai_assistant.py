@@ -4,10 +4,6 @@ import requests
 import tkinter as tk
 from tkinter import scrolledtext
 from tkinter import font
-import time
-import random
-import speech_recognition as sr
-import pyttsx3
 import threading
 from datetime import datetime
 import pytz
@@ -15,22 +11,8 @@ from config import (
     DEEPSEEKR_API_URL,
     DEEPSEEKR_API_KEY,
     WEATHER_API_URL,
-    WEATHER_API_KEY,
-    AI_FACES
+    WEATHER_API_KEY
 )
-
-# Khởi tạo engine text-to-speech
-engine = pyttsx3.init()
-# Thiết lập giọng nói tiếng Anh
-voices = engine.getProperty('voices')
-for voice in voices:
-    if 'english' in voice.name.lower():
-        engine.setProperty('voice', voice.id)
-        break
-engine.setProperty('rate', 150)  # Tốc độ nói
-
-# Khởi tạo recognizer cho speech-to-text
-recognizer = sr.Recognizer()
 
 # Hàm gửi câu hỏi đến API DeepSeekr1 và nhận phản hồi
 def get_ai_response(user_input):
@@ -53,10 +35,12 @@ def get_ai_response(user_input):
         "presence_penalty": 0
     }
     try:
-        response = requests.post(DEEPSEEKR_API_URL, headers=headers, json=data)
+        response = requests.post(DEEPSEEKR_API_URL, headers=headers, json=data, timeout=30)
         response.raise_for_status()
         full_response = response.json().get("choices", [{}])[0].get("message", {}).get("content", "No response available.")
         return full_response
+    except requests.exceptions.Timeout:
+        return "Sorry, the request timed out. Please try again later."
     except Exception as e:
         return f"Sorry, an error occurred: {str(e)}"
 
@@ -70,7 +54,7 @@ def get_weather(city):
         "q": city
     }
     try:
-        response = requests.get(WEATHER_API_URL, params=params)
+        response = requests.get(WEATHER_API_URL, params=params, timeout=10)
         response.raise_for_status()  # Kiểm tra lỗi HTTP
         weather_data = response.json()
         condition = weather_data['current']['condition']['text']
@@ -86,27 +70,10 @@ def get_weather(city):
             f"Temp: {temp_c}°C (Feels: {feelslike_c}°C)\n"
             f"Humidity: {humidity}% | Wind: {wind_kph} km/h"
         )
+    except requests.exceptions.Timeout:
+        return "Sorry, the weather request timed out. Please try again later."
     except Exception as e:
         return f"Sorry, an error occurred when getting weather information: {str(e)}"
-
-def speak(text):
-    """Chuyển văn bản thành giọng nói"""
-    engine.say(text)
-    engine.runAndWait()
-
-def listen():
-    """Lắng nghe và chuyển giọng nói thành văn bản"""
-    with sr.Microphone() as source:
-        print("Listening...")
-        recognizer.adjust_for_ambient_noise(source)
-        audio = recognizer.listen(source)
-        try:
-            text = recognizer.recognize_google(audio, language='en-US')
-            return text
-        except sr.UnknownValueError:
-            return "Could not recognize speech"
-        except sr.RequestError:
-            return "Error connecting to speech recognition service"
 
 def create_ui():
     def on_submit(event=None):
@@ -116,45 +83,62 @@ def create_ui():
             entry.delete(0, tk.END)
 
     def process_input(user_input):
-        if user_input.lower().startswith("weather "):
-            city = user_input.split("in")[-1].strip()
-            response = get_weather(city)
-        else:
-            response = get_ai_response(user_input)
-        
-        output_area.insert(tk.END, f"\nYou: {user_input}\nAI: {response}\n")
+        # Hiển thị câu hỏi của người dùng ngay lập tức
+        output_area.config(state='normal')
+        output_area.insert(tk.END, f"\nYou: {user_input}\n")
+        output_area.config(state='disabled')
         output_area.see(tk.END)
         
-        # Phát âm thanh phản hồi
-        threading.Thread(target=speak, args=(response,)).start()
-
-    def update_status(message):
-        status_label.config(text=message)
-        window.after(2000, lambda: status_label.config(text=""))  # Xóa tin nhắn sau 2 giây
-
-    def start_listening():
-        def listen_thread():
-            update_status("Listening...")
-            voice_input = listen()
-            if voice_input:
-                update_status("Voice recognized!")
-                entry.delete(0, tk.END)
-                entry.insert(0, voice_input)
-                process_input(voice_input)
-            else:
-                update_status("Could not recognize speech")
+        # Vô hiệu hóa nút gửi và hiển thị rõ là đang xử lý
+        submit_button.config(state='disabled')
+        entry.config(state='disabled')
         
-        threading.Thread(target=listen_thread).start()
+        # Xử lý trong luồng riêng biệt
+        def background_task():
+            if user_input.lower().startswith("weather "):
+                # Trích xuất tên thành phố
+                if "in" in user_input.lower():
+                    city = user_input.lower().split("in")[-1].strip()
+                else:
+                    city = user_input[8:].strip()
+                response = get_weather(city)
+            else:
+                response = get_ai_response(user_input)
+            
+            # Cập nhật UI trong luồng chính
+            window.after(0, lambda: update_ui(response))
+            
+        threading.Thread(target=background_task).start()
+    
+    def update_ui(response):
+        # Hiển thị câu trả lời
+        output_area.config(state='normal')
+        output_area.insert(tk.END, f"AI: {response}\n\n")
+        output_area.config(state='disabled')
+        output_area.see(tk.END)
+        
+        # Kích hoạt lại các điều khiển
+        submit_button.config(state='normal')
+        entry.config(state='normal')
+        entry.focus()
 
     def update_weather():
         city = city_entry.get()
         if city:
-            weather_info = get_weather(city)
-            weather_area.config(state='normal')  # Mở khóa để cập nhật
-            weather_area.delete(1.0, tk.END)
-            weather_area.insert(tk.END, weather_info)
-            weather_area.config(state='disabled')  # Khóa lại sau khi cập nhật
-        window.after(1800000, update_weather)  # Cập nhật mỗi 30 phút
+            def background_task():
+                weather_info = get_weather(city)
+                window.after(0, lambda: update_weather_ui(weather_info))
+            
+            threading.Thread(target=background_task).start()
+        
+        # Hẹn giờ cập nhật sau 30 phút
+        window.after(1800000, update_weather)
+    
+    def update_weather_ui(weather_info):
+        weather_area.config(state='normal')  # Mở khóa để cập nhật
+        weather_area.delete(1.0, tk.END)
+        weather_area.insert(tk.END, weather_info)
+        weather_area.config(state='disabled')  # Khóa lại sau khi cập nhật
 
     def save_city():
         update_weather()  # Cập nhật thông tin thời tiết ngay khi lưu
@@ -172,18 +156,11 @@ def create_ui():
         time_label.config(text=f"{current_time}\n{current_date}")
         window.after(1000, update_time)  # Cập nhật mỗi giây
 
-    def update_ai_face():
-        ai_face = random.choice(AI_FACES)
-        ai_face_label.config(text=ai_face)
-        window.after(5000, update_ai_face)  # Cập nhật biểu cảm mỗi 5 giây
-
     window = tk.Tk()
-    window.title("AI Assistant")
+    window.title("AI Thomas")
     
     # Thiết lập kích thước tối thiểu cho cửa sổ
     window.minsize(800, 600)  # Chiều rộng tối thiểu 800px, chiều cao tối thiểu 600px
-    
-    # Ngăn không cho thay đổi kích thước cửa sổ
     window.resizable(True, True)  # Cho phép thay đổi kích thước nhưng không nhỏ hơn minsize
 
     # Font chữ đẹp
@@ -193,7 +170,7 @@ def create_ui():
     time_font = font.Font(family="Helvetica", size=12, weight="bold")
 
     # Thêm tiêu đề và dòng thiết kế
-    title_label = tk.Label(window, text="AI Thomas", font=title_font, fg="#0066cc")
+    title_label = tk.Label(window, text="AI Thomas", font=title_font, fg="#df0a0a")
     title_label.pack(pady=5)
     
     designer_label = tk.Label(window, text="Designed by Dr.ngominhtu", font=designer_font)
@@ -203,26 +180,6 @@ def create_ui():
     time_label = tk.Label(window, font=time_font, justify=tk.LEFT)
     time_label.pack(anchor='ne', padx=10, pady=5)
     update_time()
-
-    # Khung cho khuôn mặt AI
-    ai_face_frame = tk.Frame(window)
-    ai_face_frame.pack(side=tk.LEFT, padx=10, pady=10, anchor='nw')
-
-    ai_face_label = tk.Label(ai_face_frame, text="", font=("Courier", 20), width=10, height=2)
-    ai_face_label.pack()
-    update_ai_face()
-
-    # Thêm khung cho voice chat và trạng thái
-    voice_frame = tk.Frame(ai_face_frame)
-    voice_frame.pack(pady=10, fill='x')
-
-    # Thêm nút voice chat
-    voice_button = tk.Button(voice_frame, text="🎤", font=("Arial", 20), command=start_listening, width=3)
-    voice_button.pack(side=tk.LEFT, padx=5)
-
-    # Thêm ô hiển thị trạng thái
-    status_label = tk.Label(voice_frame, text="", font=("Helvetica", 10), fg="#666666", width=20)
-    status_label.pack(side=tk.LEFT, padx=5)
 
     # Khung chính cho nội dung
     main_frame = tk.Frame(window)
@@ -257,8 +214,13 @@ def create_ui():
     submit_button = tk.Button(chat_frame, text="Send", command=on_submit, font=custom_font, width=8)
     submit_button.pack(side=tk.LEFT)
 
-    output_area = scrolledtext.ScrolledText(main_frame, wrap=tk.WORD, width=60, height=10, font=custom_font)
+    output_area = scrolledtext.ScrolledText(main_frame, wrap=tk.WORD, width=60, height=20, font=custom_font)
     output_area.pack(fill='both', expand=True, pady=5)
+
+    # Khởi tạo với một tin nhắn chào mừng
+    output_area.config(state='normal')
+    output_area.insert(tk.END, "Welcome to AI Thomas! How can I help you today?\n\n")
+    output_area.config(state='disabled')
 
     window.mainloop()
 
